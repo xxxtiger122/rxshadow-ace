@@ -29,6 +29,11 @@
 #include <stddef.h>
 #include "ace_common.h"
 
+/* user_hwdebug_state 定义在 ARM64 的 asm/ptrace.h（UAPI） */
+#if defined(__aarch64__)
+#include <asm/ptrace.h>
+#endif
+
 /* NT 常量：避免 <linux/elf.h>/<elf.h> 头文件在交叉编译时的差异 */
 #ifndef NT_PRSTATUS
 #define NT_PRSTATUS 1
@@ -55,12 +60,12 @@ static int try_set_one_hwbp(pid_t tid, uint64_t addr)
     int i;
     memset(&st, 0, sizeof(st));
     for (i = 0; i < 16; i++) {
-        st.dbg_info[i].ctrl = 0;
-        st.dbg_info[i].addr = 0;
+        st.dbg_regs[i].ctrl = 0;
+        st.dbg_regs[i].addr = 0;
     }
-    st.dbg_info[0].addr = addr;
+    st.dbg_regs[0].addr = addr;
     /* ARM64 DBGBCR: E=bit0, BAS=bits[13:8], MASK=bits[28:24] */
-    st.dbg_info[0].ctrl = 1u | (0xFu << 8); /* enable + 全字节 */
+    st.dbg_regs[0].ctrl = 1u | (0xFu << 8); /* enable + 全字节 */
     iov.iov_base = &st;
     iov.iov_len = sizeof(st);
     if (ptrace(PTRACE_SETREGSET, tid, (void *)NT_ARM_HW_BREAK, &iov) != 0) {
@@ -98,11 +103,11 @@ static int audit_thread_hwbp(pid_t tid, char *out, size_t outsz)
     iov.iov_len = sizeof(st);
     if (ptrace(PTRACE_GETREGSET, tid, (void *)NT_ARM_HW_BREAK, &iov) == 0) {
         for (i = 0; i < 16; i++) {
-            if (st.dbg_info[i].ctrl & 1u) { /* E bit */
+            if (st.dbg_regs[i].ctrl & 1u) { /* E bit */
                 n_set++;
                 snprintf(out + strlen(out), outsz - strlen(out),
                          "HWBP%d=0x%llx ", i,
-                         (unsigned long long)st.dbg_info[i].addr);
+                         (unsigned long long)st.dbg_regs[i].addr);
             }
         }
     }
@@ -111,11 +116,11 @@ static int audit_thread_hwbp(pid_t tid, char *out, size_t outsz)
     iov.iov_len = sizeof(st);
     if (ptrace(PTRACE_GETREGSET, tid, (void *)NT_ARM_HW_WATCH, &iov) == 0) {
         for (i = 0; i < 16; i++) {
-            if (st.dbg_info[i].ctrl & 1u) {
+            if (st.dbg_regs[i].ctrl & 1u) {
                 n_set++;
                 snprintf(out + strlen(out), outsz - strlen(out),
                          "WATCH%d=0x%llx ", i,
-                         (unsigned long long)st.dbg_info[i].addr);
+                         (unsigned long long)st.dbg_regs[i].addr);
             }
         }
     }

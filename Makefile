@@ -31,7 +31,20 @@ bin:
 test: bin
 	@PATH="$(abspath $(BIN)):$$PATH" sh host/test_ace.sh
 
-clean:
-	rm -rf bin
+# ARM64 交叉编译检查（需 aarch64-linux-gnu-gcc；NDK 构建前先本地过一遍，
+# 防 det_*.c 的 ARM64 分支语法错误只到 CI 才暴露）
+check-arm64:
+	@command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 || { echo "需要 aarch64-linux-gnu-gcc"; exit 1; }
+	@rm -rf .a64check && mkdir .a64check
+	@for f in $(TARGETS); do \
+		aarch64-linux-gnu-gcc -c -O0 -Wall -std=gnu11 -pthread -I. -o .a64check/$$f.o $$f.c \
+			|| { echo "FAIL $$f (ARM64)"; rm -rf .a64check; exit 1; }; \
+		echo "OK $$f"; \
+	done
+	@rm -rf .a64check
+	@echo "ARM64 交叉编译全部通过"
 
-.PHONY: all bin test clean
+clean:
+	rm -rf bin .a64check
+
+.PHONY: all bin test check-arm64 clean

@@ -28,6 +28,11 @@ jobs:
           "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973"
           echo "NDK=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
 
+      - name: ARM64 交叉编译预检（防 NDK 构建才暴露的语法错误）
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu > /dev/null 2>&1
+          make check-arm64
+
       - name: Build native lab-ace + APK
         working-directory: android
         run: |
