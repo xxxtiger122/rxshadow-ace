@@ -56,6 +56,35 @@ struct xseg {
 static struct xseg g_segs[512];
 static int g_nseg = 0;
 
+/* victim 自带可执行页白名单（H 区 + 静态函数页，来自状态文件）：
+ * 双视图 hook 的执行面复用原 VA（shadow 是同一 VA 的第二物理页），
+ * 用户态 PC 永远落在 H_A 的 VA 区间 —— 这类命中是"实验对象自带"，
+ * 不是 hook 引入，必须排除，否则干净基线就误报。
+ * 白名单外的匿名可执行命中（trampoline/DBI/Frida 新增 VA）才是信号。 */
+static uint64_t g_wl[8];
+static int g_wl_n = 0;
+
+static void load_whitelist(const char *state)
+{
+    static const char *keys[] = { "va_a", "va_b", "va_alpha", "va_beta",
+                                  "va_gamma", NULL };
+    int i;
+    for (i = 0; keys[i] && g_wl_n < 8; i++) {
+        uint64_t v = ace_state_get_u64(state, keys[i], 0);
+        if (v)
+            g_wl[g_wl_n++] = v & ~(uint64_t)0xFFF;
+    }
+}
+
+static int in_whitelist(uint64_t page)
+{
+    int i;
+    for (i = 0; i < g_wl_n; i++)
+        if (g_wl[i] == page)
+            return 1;
+    return 0;
+}
+
 static void load_maps(pid_t pid)
 {
     char path[64];
@@ -115,6 +144,7 @@ static uint64_t strip_high(uint64_t a)
     return a & 0x0000FFFFFFFFFFFFull;
 }
 
+/* 返回：0=正常文件段 1=匿名可执行 2=白名单(内核区) 3=ghost 4=H 区白名单 */
 static int classify_strip(uint64_t addr)
 {
     int c = classify(addr);
@@ -123,9 +153,11 @@ static int classify_strip(uint64_t addr)
         if (s != addr) {
             int c2 = classify(s);
             if (c2 != 3)
-                return c2;
+                c = c2;
         }
     }
+    if (c == 1 && in_whitelist(addr & ~(uint64_t)0xFFF))
+        return 4; /* victim 自带 H 区：不计命中 */
     return c;
 }
 
@@ -143,7 +175,8 @@ static int read_vm(pid_t pid, uint64_t addr, void *out, size_t n)
     return rd == (ssize_t)n ? 0 : -1;
 }
 
-/* 单线程回溯；返回命中的匿名可执行/幽灵地址数 */
+/* 单线程回溯；返回命中的匿名可执行/幽灵地址数（H 区白名单计 hwl 不计命中） */
+static volatile int g_hwl = 0;
 static int backtrace_thread(pid_t pid, pid_t tid, char *out, size_t outsz)
 {
     struct iovec iov;
@@ -183,6 +216,8 @@ static int backtrace_thread(pid_t pid, pid_t tid, char *out, size_t outsz)
             n_hit++;
             n += snprintf(o + n, outsz - n, "PC=0x%llx(%s) ", (unsigned long long)pc,
                           c == 1 ? "anon-exec" : "ghost");
+        } else if (c == 4) {
+            g_hwl++;
         }
         if (lr) {
             c = classify_strip(lr);
@@ -190,6 +225,8 @@ static int backtrace_thread(pid_t pid, pid_t tid, char *out, size_t outsz)
                 n_hit++;
                 n += snprintf(o + n, outsz - n, "LR=0x%llx(%s) ",
                               (unsigned long long)lr, c == 1 ? "anon-exec" : "ghost");
+            } else if (c == 4) {
+                g_hwl++;
             }
         }
     }
@@ -211,6 +248,8 @@ static int backtrace_thread(pid_t pid, pid_t tid, char *out, size_t outsz)
                     snprintf(o, outsz - (size_t)(o - out), "F%d=0x%llx(%s) ", f,
                              (unsigned long long)ret, c == 1 ? "anon-exec" : "ghost");
                 }
+            } else if (c == 4) {
+                g_hwl++;
             }
         }
         if (next_fp <= cur)
@@ -272,6 +311,7 @@ int main(int argc, char **argv)
                  "maps 解析失败", g_json);
         return 1;
     }
+    load_whitelist(g_state);
 
     {
         char tpath[64];
@@ -307,21 +347,23 @@ int main(int argc, char **argv)
     }
 
     snprintf(hits + strlen(hits), sizeof(hits) - strlen(hits),
-             "tids=%d attached=%d", n_tids, n_attach_ok);
+             "tids=%d attached=%d hwl_anon=%d", n_tids, n_attach_ok, g_hwl);
 
     if (total_hit > 0) {
         v = V_HOOKED;
         score = 92;
         snprintf(note, sizeof(note),
-                 "%d 处执行流/返回地址落在匿名可执行区或未登记内存："
-                 "执行面（shadow/跳板）在用户态可见", total_hit);
+                 "%d 处执行流/返回地址落在白名单外的匿名可执行区或未登记内存："
+                 "trampoline/DBI/幽灵代码（H 区自带命中 %d 处已排除）",
+                 total_hit, g_hwl);
     } else if (n_attach_ok == 0) {
         v = V_ERROR;
         score = 0;
         snprintf(note, sizeof(note), "无法 attach 任何线程（权限）");
     } else {
         snprintf(note, sizeof(note),
-                 "全部 %d 个线程执行流均在白名单可执行段内", n_attach_ok);
+                 "执行流均在白名单段内（H 区自带命中 %d 处已排除，双视图"
+                 "执行面复用原 VA 对该信道天然不可见）", g_hwl);
     }
 
     ace_emit(stdout, "callstack", "L7-exec-flow-audit", v, score, hits, note, g_json);

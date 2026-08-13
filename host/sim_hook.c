@@ -49,7 +49,7 @@ static void write_state(const char *path, uint64_t va_a, uint64_t va_b,
                         long call_a, long call_b, uint64_t pfn_a, uint64_t pfn_b,
                         long mis_a, long tot_a, int hooked, int sim_split,
                         uint64_t lat_a, uint64_t lat_b, long minflt_delta,
-                        long stime_ms, long pingpong_ns)
+                        long stime_ms, long pingpong_ns, long uctx_cave)
 {
     char tmp[512];
     FILE *f;
@@ -91,6 +91,7 @@ static void write_state(const char *path, uint64_t va_a, uint64_t va_b,
     fprintf(f, "majflt_delta=0\n");
     fprintf(f, "sig_trap=0\nsig_segv=0\nsig_ill=0\n");
     fprintf(f, "uctx_pc_ok=5\nuctx_pc_anon=0\n");
+    fprintf(f, "uctx_pc_cave=%ld\n", uctx_cave);
     fprintf(f, "pingpong_ns=%ld\n", pingpong_ns);
     fprintf(f, "mincore_ok=1\nmincore_cave=1\n");
     fprintf(f, "mmap_probe_fail=0\nmmap_probe_n=16\n");
@@ -219,7 +220,8 @@ int main(int argc, char **argv)
                     5,
                     (strcmp(mode, "clean") != 0) ? 50000 : 5,  /* minflt_delta */
                     (strcmp(mode, "clean") != 0) ? 600 : 0,     /* stime_ms */
-                    (strcmp(mode, "clean") != 0) ? 400 : 30);   /* pingpong_ns */
+                    (strcmp(mode, "clean") != 0) ? 400 : 30,   /* pingpong_ns */
+                    (strcmp(mode, "clean") != 0) ? 3 : 0);     /* uctx_pc_cave */
         printf("S call_a=%ld call_b=%ld mis=%ld crc_self=0x%08x crc_gup=0x%08x "
                "hooked=%d\n", ca, cb, mis, crc_self_rpt, crc_gup, hooked);
         usleep((useconds_t)interval * 1000);

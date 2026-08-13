@@ -72,7 +72,8 @@ int main(int argc, char **argv)
     int score = 0;
     unsigned long mf1 = 0, mf2 = 0, mj1 = 0;
     long minflt_delta = -1, stime = -1, utime = -1;
-    long sig_trap = 0, sig_segv = 0, sig_ill = 0, uctx_anon = 0, pingpong = 0;
+    long sig_trap = 0, sig_segv = 0, sig_ill = 0, uctx_anon = 0, uctx_cave = 0,
+         pingpong = 0;
     double stime_ratio = 0.0;
 
     for (i = 1; i < argc; i++) {
@@ -109,6 +110,7 @@ int main(int argc, char **argv)
     sig_segv = ace_state_get_l(g_state, "sig_segv", 0);
     sig_ill = ace_state_get_l(g_state, "sig_ill", 0);
     uctx_anon = ace_state_get_l(g_state, "uctx_pc_anon", 0);
+    uctx_cave = ace_state_get_l(g_state, "uctx_pc_cave", 0);
     pingpong = ace_state_get_l(g_state, "pingpong_ns", 0);
 
     if (stime > 0 && utime >= 0 && stime + utime > 0)
@@ -116,13 +118,20 @@ int main(int argc, char **argv)
 
     snprintf(hits, sizeof(hits),
              "self_minflt_delta=%ld stime_ratio=%.4f sig{trap=%ld segv=%ld ill=%ld} "
-             "uctx_pc_anon=%ld pingpong_ns=%ld | indep_minflt_delta=%lu",
+             "uctx{pc_anon=%ld pc_cave=%ld} pingpong_ns=%ld | indep_minflt_delta=%lu",
              minflt_delta, stime_ratio, sig_trap, sig_segv, sig_ill,
-             uctx_anon, pingpong,
+             uctx_anon, uctx_cave, pingpong,
              (unsigned long)(mf2 > mf1 ? mf2 - mf1 : 0));
 
     /* 判决 */
-    if (minflt_delta > 1000) {
+    if (uctx_cave > 0) {
+        /* 异步信号观测到 PC 在 H_A 页尾洞区：Cave 洞内代码正在执行 */
+        v = V_HOOKED;
+        score = 95;
+        snprintf(note, sizeof(note),
+                 "ucontext PC %ld 次落在 H_A 页尾洞区（正常 H_A 只有 8 字节"
+                 "入口代码）：Cave 插桩执行证据", uctx_cave);
+    } else if (minflt_delta > 1000) {
         /* 每轮（~1s）超千次 minor fault：异常驱动 hook 的读/执行 fault 风暴 */
         v = V_HOOKED;
         score = 90;
@@ -142,11 +151,13 @@ int main(int argc, char **argv)
                  "信号泄漏：trap=%ld segv=%ld ill=%ld（BRK/HWBP 极端场景）",
                  sig_trap, sig_segv, sig_ill);
     } else if (uctx_anon > 0) {
-        v = V_SUSPECT;
-        score = 50;
+        /* worker 自带调用 H_A 时被信号打断会命中 uctx_pc_anon —— 背景统计，
+         * 不计命中（洞区 uctx_pc_cave 才是 Cave 执行证据） */
         snprintf(note, sizeof(note),
-                 "异步信号观察到 %ld 次执行流在匿名可执行页（canonical-PC 映射缺陷）",
+                 "记账正常（uctx_pc_anon=%ld 为 worker 自带 H_A 调用背景）",
                  uctx_anon);
+        v = V_CLEAN;
+        score = 0;
     } else if (pingpong > 500) {
         v = V_SUSPECT;
         score = 45;

@@ -123,6 +123,7 @@ static volatile unsigned long g_minflt_delta = 0;
 static volatile unsigned long g_majflt_delta = 0;
 static volatile long g_sig_trap = 0, g_sig_segv = 0, g_sig_ill = 0;
 static volatile long g_uctx_pc_ok = 0, g_uctx_pc_anon = 0, g_uctx_pc_unknown = 0;
+static volatile long g_uctx_pc_cave = 0; /* Cave 洞区 PC（插桩执行证据） */
 static volatile long g_pingpong_ns = 0;
 static volatile long g_mincore_ok = -1;   /* 自测：H_A 全页 mincore 驻留 */
 static volatile long g_mincore_cave = -1; /* 页尾 64B（cave 洞区）驻留 */
@@ -141,7 +142,10 @@ static void fault_handler(int sig, siginfo_t *si, void *uc)
         g_sig_ill++;
 }
 
-/* SIGUSR1 自投递：异步信号 ucontext PC 分类（Cave canonical-PC 映射缺陷检测） */
+/* SIGUSR1 自投递：异步信号 ucontext PC 分类（Cave canonical-PC 映射缺陷检测）
+ * 正常 H_A 代码只有 8 字节（MOV W0,#42; RET），PC 只可能是页首 offset 0/4；
+ * PC 落在页尾洞区（offset >= 4096-64）= Cave 洞内代码正在执行 —— 强证据。
+ */
 static void usr1_handler(int sig, siginfo_t *si, void *uc)
 {
     uint64_t pc = 0;
@@ -161,8 +165,13 @@ static void usr1_handler(int sig, siginfo_t *si, void *uc)
 #endif
     va_a = (uint64_t)(uintptr_t)h_pages[0];
     va_b = (uint64_t)(uintptr_t)h_pages[1];
-    if ((pc >= va_a && pc < va_a + 4096) || (pc >= va_b && pc < va_b + 4096)) {
-        g_uctx_pc_anon++; /* 信号观察到执行流在匿名可执行页（H 区）*/
+    if (pc >= va_a && pc < va_a + 4096) {
+        if (pc >= va_a + 4096 - 64)
+            g_uctx_pc_cave++; /* 洞区：Cave 插桩执行 */
+        else
+            g_uctx_pc_anon++; /* H_A 常规偏移（worker 自带调用） */
+    } else if (pc >= va_b && pc < va_b + 4096) {
+        g_uctx_pc_anon++; /* H_B 控制页（无 hook，正常） */
     } else {
         g_uctx_pc_ok++;
     }
@@ -347,6 +356,7 @@ static void state_write(void)
         fprintf(f, "sig_ill=%ld\n", *(volatile long *)&g_sig_ill);
         fprintf(f, "uctx_pc_ok=%ld\n", *(volatile long *)&g_uctx_pc_ok);
         fprintf(f, "uctx_pc_anon=%ld\n", *(volatile long *)&g_uctx_pc_anon);
+        fprintf(f, "uctx_pc_cave=%ld\n", *(volatile long *)&g_uctx_pc_cave);
         fprintf(f, "pingpong_ns=%ld\n", *(volatile long *)&g_pingpong_ns);
         fprintf(f, "mincore_ok=%ld\n", *(volatile long *)&g_mincore_ok);
         fprintf(f, "mincore_cave=%ld\n", *(volatile long *)&g_mincore_cave);
@@ -757,7 +767,9 @@ int main(int argc, char **argv)
             }
             sample_faults();
             if ((rounds++ % 5) == 0)
-                raise(SIGUSR1); /* ucontext PC 自检（异步信号观察点） */
+                pthread_kill(th_a, SIGUSR1); /* 投递给 H_A worker：ucontext PC 自检
+                                              * （worker 正在执行 H_A，PC 落洞区 =
+                                              *  Cave 插桩执行证据；主线程不跑 H_A） */
             state_write();
             usleep((useconds_t)g_interval_ms * 1000);
         }

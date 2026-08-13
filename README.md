@@ -58,7 +58,7 @@ adb shell su -c 'cd /data/local/tmp/lab-ace && RX_HOOK=1 RX_SELFMOD=1 sh ace_run
 | `det_crossread` | L2 跨进程读 | `follow_page_pte` 隐藏窗：GUP 读返回 original `page*` | 独立 GUP 读 ≠ victim 自报自读 CRC；`--tries 64` 高频采样抓跷跷板/NPT 影子页暴露窗 | 挂后 `hooked`（最直接证据） |
 | `det_pagemap` | L3 页表/PFN | 双 PFN 本质：shadow 是第二张物理页；fork 隐藏=子不继承 shadow | 父/子进程同一 VA 的 pagemap PFN 分歧；采样稳定性 | fork 后父/子 PFN 不同 |
 | `det_timing` | L4 时序 | BRK ≈401ns/op vs Cave ≈4.5ns/op vs 干净 ≈2-5ns（290304 评论：扫描耗时/时间差）；VMEXIT 开销（NPT/EPT 帖） | H_A/H_B 延迟比 + getpid syscall 延迟 + `lat_read_a_ns` 读页耗时 | 挂后 ratio 拉高 |
-| `det_faultcount` | L4 记账 | 异常驱动 hook 的 fault/stime 记账（292226"最危险检测线"）：每次命中进内核 → minflt 暴涨、stime 上升；读窗翻页"读 fault 收费"（290304）；信号泄漏（292066） | minflt_delta/轮、stime 占比、SIGTRAP/SEGV/ILL 计数、uctx_pc_anon（Cave canonical-PC 映射缺陷）、pingpong read+call 最优耗时 | 挂后 minflt/stime 暴涨 |
+| `det_faultcount` | L4 记账 | 异常驱动 hook 的 fault/stime 记账（292226"最危险检测线"）：每次命中进内核 → minflt 暴涨、stime 上升；读窗翻页"读 fault 收费"（290304）；信号泄漏（292066）；**Cave 洞区 PC**（292354 canonical-PC 映射缺陷） | minflt_delta/轮、stime 占比、SIGTRAP/SEGV/ILL 计数、uctx_pc_cave（PC 落 H_A 页尾洞区 = Cave 插桩执行）、pingpong read+call 最优耗时 | 挂后 minflt/stime 暴涨；cave 后洞区 PC 命中 |
 | `det_perf` | L4 perf 记账 | perf 性能侧信道（290718/292066 评论）：BRK/跷跷板命中 = 每次 1+ fault；跨核 TLB shootdown IPI 是唯一跨进程可见信道（292226） | perf_event_open 统计 victim page-faults/cycles 速率；/proc/vmstat pgfault 差分；/proc/interrupts TLB IPI 差分；smaps RSS/Shared 记账 | BRK/跷跷板命中；Cave 稳态不命中（设计目标） |
 | `det_diff` | L2 差分对照 | GUP 隐藏窗骗"外部读"骗不了"进程自读"（290718 自读 CRC 检测化）：两个同构 victim 构成对照实验 | A 自读 ≠ B 自读 且 GUP 一致 → 差分锁定被挂侧 | 双 victim 场景命中（`--state2`） |
 | `det_selfmod` | L6 写语义 | 写 GUP 停到 original → retire（释放 shadow） | 向 H_A 写 MOV W0,#7 后调用值应变 7、双视图收敛；不变 = hook 存活 | 写后收敛=设计内；不收敛=异常 |
@@ -68,7 +68,7 @@ adb shell su -c 'cd /data/local/tmp/lab-ace && RX_HOOK=1 RX_SELFMOD=1 sh ace_run
 | 检测器 | 信道 | 针对的机制 | 用户态信号 | 真机预期 |
 |---|---|---|---|---|
 | `det_trampoline` | L7 可执行内存审计 | 传统 hook 的跳板 + DBI 代码必须存在于"匿名+可执行"内存（290718"必死于 Trampoline 扫描"） | 遍历 maps 找非白名单匿名可执行页，与 `anon_exec_base` 基线对比（rxshadow shadow 页在内核，用户态看不到 → 不命中） | 传统 hook/Frida 命中；双视图不命中 |
-| `det_callstack` | L7 执行流审计 | 指针漫游/栈回溯（290718）：hook 的执行面（shadow/跳板）在匿名可执行区 | ptrace 读各线程 PC/LR，沿 FP 链回溯 ≤48 帧，返回地址指向匿名可执行/未登记区 | 被挂线程执行流命中 |
+| `det_callstack` | L7 执行流审计 | 指针漫游/栈回溯（290718）：hook 的执行面（shadow/跳板）在匿名可执行区 | ptrace 读各线程 PC/LR，沿 FP 链回溯 ≤48 帧，返回地址指向**白名单外**匿名可执行/未登记区（H 区自带命中已排除；PAC/TBI 高位已剥离） | trampoline/DBI/幽灵代码命中；双视图执行面复用原 VA → 天然不命中 |
 | `det_hwbp` | L7 硬件断点审计 | ptrace 五步杀（290718）：HWBP 占调试寄存器 + 超限设置应 -ENOSPC | 读 ARM64 NT_ARM_HW_BREAK/WATCH 寄存器 enabled 位；试设第 17 个断点 | HWBP hook 命中 |
 | `det_procscan` | L7 进程审计 | Hunter（277402）：沙箱/注入器多起进程 + TracerPid + 注入路径指纹 | /proc 同 UID 进程、TracerPid、maps 里 frida/zygisk/xposed 关键词 | 注入器命中 |
 | `det_linkmap` | L7 地址空间语义 | "能执行却不在 link_map"=幽灵代码（290871/292066）；匿名可执行映射必须可归属 | 遍历 victim maps 找不可归属的匿名可执行段（白名单=H 区页）；自身 dl_iterate_phdr 自检 | 幽灵内存/trampoline 命中 |
@@ -246,3 +246,16 @@ score=0，7 信道全绿无误报。
    判 ghost 时先剥高 16 位再重分类——PAC 垃圾帧落回真实 .text 不算命中，
    真 VMA-less 幽灵地址（低 48 位内）不受影响。`det_callstack --selftest`
    可回归验证剥离逻辑（host 已纳入 make test）。
+10. **H 区白名单**（真机修复）：labtarget 的 worker 线程本来就调用 H_A
+    （匿名可执行页），外部 ptrace 采样必然命中 → 干净基线误报。
+    `det_callstack` 从状态文件读 va_a/va_b/alpha/beta/gamma 构成白名单，
+   白名单内命中计 `hwl_anon` 背景、不计分。注意语义：**双视图 hook 的
+    执行面复用原 VA**（shadow 是同一 VA 的第二物理页），用户态 PC 永远
+    落在 H_A 区间 → callstack 信道对 rxshadow 天然无信号；它检测的是
+    trampoline/DBI/Frida 这类"新增可执行 VA"的 hook。
+11. **Cave 洞区 PC 检测**：labtarget 自投递 SIGUSR1 改为 `pthread_kill`
+    到 H_A worker 线程（主线程不执行 H_A 无意义）。正常 H_A 只有 8 字节
+    （MOV W0,#42; RET），PC 只可能是 offset 0/4；PC 落在页尾洞区
+    （offset ≥ 4096-64）= Cave 洞内插桩代码正在执行 —— `uctx_pc_cave`
+    计数，det_faultcount 判 hooked 95。`uctx_pc_anon`（H_A 常规偏移）
+    是 worker 自带调用背景，不计命中。
