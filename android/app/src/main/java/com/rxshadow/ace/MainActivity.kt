@@ -170,7 +170,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun TabItem(
+private fun RowScope.TabItem(
     label: String,
     icon: ImageVector,
     index: Int,
