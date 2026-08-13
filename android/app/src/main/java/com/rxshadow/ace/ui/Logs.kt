@@ -4,6 +4,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -22,7 +24,7 @@ fun Logs(victimLog: String, stateRaw: String?, onRefresh: () -> Unit) {
             Text("实时日志", style = MaterialTheme.typography.headlineSmall,
                 fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
             IconButton(onClick = onRefresh) {
-                Icon(androidx.compose.material.icons.Icons.Default.Refresh, null)
+                Icon(Icons.Default.Refresh, null)
             }
         }
         LazyColumn(

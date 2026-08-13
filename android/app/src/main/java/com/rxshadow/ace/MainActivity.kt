@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dashboard
@@ -115,7 +116,7 @@ class MainActivity : ComponentActivity() {
                                     scope.launchSafe {
                                         val ok2 = withContext(Dispatchers.IO) { engine.startVictim2() }
                                         if (ok2) {
-                                            withContext(Dispatchers.IO) { Thread.sleep(1500) }
+                                            delay(1500)
                                             val r = withContext(Dispatchers.IO) { engine.runAce(diffMode = true) }
                                             if (r != null) { agg = r.first; dets = r.second }
                                         }
@@ -137,8 +138,10 @@ class MainActivity : ComponentActivity() {
                                 refreshing = busy,
                             )
                             2 -> Logs(victimLog, stateRaw) {
-                                victimLog = withContext(Dispatchers.IO) { engine.readVictimLog() }
-                                stateRaw = withContext(Dispatchers.IO) { engine.readStateRaw() }
+                                scope.launchSafe {
+                                    victimLog = withContext(Dispatchers.IO) { engine.readVictimLog() }
+                                    stateRaw = withContext(Dispatchers.IO) { engine.readStateRaw() }
+                                }
                             }
                             3 -> About()
                         }
@@ -171,13 +174,12 @@ private fun TabItem(label: String, icon: ImageVector, index: Int, current: Int, 
     )
 }
 
-/** 轻量协程包装：异常吞掉并 toast */
-private fun androidx.compose.runtime.CoroutineScope.launchSafe(block: suspend () -> Unit) {
-    kotlinx.coroutines.launch {
+/** 轻量协程包装：异常吞掉避免崩溃 */
+private fun kotlinx.coroutines.CoroutineScope.launchSafe(block: suspend () -> Unit) {
+    launch {
         try {
             block()
-        } catch (e: Exception) {
-            // 抛给 UI 层的 toast 不在此处理，避免崩溃
+        } catch (_: Exception) {
         }
     }
 }
