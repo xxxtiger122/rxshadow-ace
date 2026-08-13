@@ -33,15 +33,15 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu > /dev/null 2>&1
           make check-arm64
 
-      - name: Build native lab-ace + APK
+      - name: Build APK（CMake 编译 libace.so + Kotlin 打包）
         working-directory: android
         run: |
-          gradle buildNative assembleDebug --no-daemon
+          gradle assembleDebug --no-daemon
 
-      - name: Verify APK
+      - name: Verify APK（检查 libace.so 与 DEX）
         run: |
           ls -la android/app/build/outputs/apk/debug/app-debug.apk
-          unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep -E "assets/bin/(labtarget|ace|det_selfcrc)" | head -5
+          unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep -E "lib/arm64-v8a/libace.so|classes" | head -5
 
       - name: Publish Release
         uses: softprops/action-gh-release@v2

@@ -41,7 +41,7 @@ static void read_victim(const char *path, uint32_t *self_a, uint32_t *gup_a,
     *va_a = ace_state_get_u64(path, "va_a", 0);
 }
 
-int main(int argc, char **argv)
+static int det_impl_main(int argc, char **argv)
 {
     int i;
     ace_verdict v = V_ERROR;
@@ -132,3 +132,35 @@ int main(int argc, char **argv)
     ace_emit(stdout, "diff", "L2-differential", v, score, hits, note, g_json);
     return (int)v;
 }
+
+/* ===== 库入口（det_libify.py 生成，diff 特例带 state2） ===== */
+#include <stdio.h>
+#include <unistd.h>
+
+int det_diff_run(const char *state_path, const char *state2_path,
+               char *json_out, size_t outsz)
+{
+    FILE *f = fmemopen(json_out, outsz, "w");
+    int saved, rc;
+    char *fake[] = { (char *)"det_diff", (char *)"--state",
+                      (char *)state_path, (char *)"--state2",
+                      (char *)state2_path, (char *)"--json", NULL };
+    if (!f)
+        return 3;
+    saved = dup(STDOUT_FILENO);
+    dup2(fileno(f), STDOUT_FILENO);
+    fflush(stdout);
+    rc = det_impl_main(6, fake);
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    fclose(f);
+    return rc;
+}
+
+#ifndef ACE_AS_LIB
+int main(int argc, char **argv)
+{
+    return det_impl_main(argc, argv);
+}
+#endif

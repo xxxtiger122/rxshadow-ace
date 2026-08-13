@@ -120,7 +120,7 @@ static int is_aarch64_brk(uint32_t w)
 #endif
 }
 
-int main(int argc, char **argv)
+static int det_impl_main(int argc, char **argv)
 {
     int g_json = 0;
     int i;
@@ -233,3 +233,37 @@ int main(int argc, char **argv)
     ace_emit(stdout, "kcore", "L5-kcore-audit", v, score, hits, note, g_json);
     return (int)v;
 }
+
+/* ===== 库入口（JNI / 无 root App 内嵌模式，det_libify.py 生成） =====
+ * 将 stdout 重定向到内存 buffer，伪造 argv 复用 impl_main。
+ * 无 exec / 无 fork：App 进程内直接调用（Android untrusted_app 域
+ * 禁止 exec app 私有 ELF，但 dlopen .so + 进程内调用完全合法）。 */
+#include <stdio.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+
+int det_kcore_run(const char *state_path, char *json_out, size_t outsz)
+{
+    FILE *f = fmemopen(json_out, outsz, "w");
+    int saved, rc;
+    char *fake[] = { (char *)"det_kcore", (char *)"--state",
+                      (char *)state_path, (char *)"--json", NULL };
+    if (!f)
+        return 3;
+    saved = dup(STDOUT_FILENO);
+    dup2(fileno(f), STDOUT_FILENO);
+    fflush(stdout);
+    rc = det_impl_main(4, fake);
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    fclose(f);
+    return rc;
+}
+
+#ifndef ACE_AS_LIB
+int main(int argc, char **argv)
+{
+    return det_impl_main(argc, argv);
+}
+#endif

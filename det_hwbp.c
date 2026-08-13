@@ -138,7 +138,7 @@ static int audit_thread_hwbp(pid_t tid, char *out, size_t outsz)
     return n_set;
 }
 
-int main(int argc, char **argv)
+static int det_impl_main(int argc, char **argv)
 {
     int i;
     char hits[1024] = "";
@@ -201,7 +201,7 @@ int main(int argc, char **argv)
         }
         /* 超限设置：ARM64 上限 16，试第 17 个应 ENOSPC */
         {
-            int r = try_set_one_hwbp(tids[i], (uint64_t)(uintptr_t)&main);
+            int r = try_set_one_hwbp(tids[i], (uint64_t)(uintptr_t)&det_impl_main);
             if (r == 0) {
                 /* 成功设置 → 若已用满则不该成功；记下但可能只是未用满 */
                 /* 清零还原 */
@@ -240,3 +240,37 @@ int main(int argc, char **argv)
     ace_emit(stdout, "hwbp", "L7-hwbp-audit", v, score, hits, note, g_json);
     return (int)v;
 }
+
+/* ===== 库入口（JNI / 无 root App 内嵌模式，det_libify.py 生成） =====
+ * 将 stdout 重定向到内存 buffer，伪造 argv 复用 impl_main。
+ * 无 exec / 无 fork：App 进程内直接调用（Android untrusted_app 域
+ * 禁止 exec app 私有 ELF，但 dlopen .so + 进程内调用完全合法）。 */
+#include <stdio.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+
+int det_hwbp_run(const char *state_path, char *json_out, size_t outsz)
+{
+    FILE *f = fmemopen(json_out, outsz, "w");
+    int saved, rc;
+    char *fake[] = { (char *)"det_hwbp", (char *)"--state",
+                      (char *)state_path, (char *)"--json", NULL };
+    if (!f)
+        return 3;
+    saved = dup(STDOUT_FILENO);
+    dup2(fileno(f), STDOUT_FILENO);
+    fflush(stdout);
+    rc = det_impl_main(4, fake);
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    fclose(f);
+    return rc;
+}
+
+#ifndef ACE_AS_LIB
+int main(int argc, char **argv)
+{
+    return det_impl_main(argc, argv);
+}
+#endif

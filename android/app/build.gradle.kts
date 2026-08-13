@@ -11,9 +11,25 @@ android {
         applicationId = "com.rxshadow.ace"
         minSdk = 28          // Android 9，与 lab-ace NDK API 28 一致
         targetSdk = 34
-        versionCode = 1
+        versionCode = 2
         versionName = "1.0"
+
+        externalNativeBuild {
+            cmake {
+                arguments += "-DANDROID_STL=none"
+                cFlags += "-O0 -g"
+            }
+        }
     }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
+    ndkVersion = "27.0.12077973"
 
     buildTypes {
         release {
@@ -54,21 +70,13 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
 
-// 任务：用 NDK 构建 lab-ace 二进制并拷入 assets/bin（无 NDK 时跳过并警告）
-tasks.register<Exec>("buildNative") {
-    val ndk = System.getenv("NDK") ?: System.getenv("ANDROID_NDK_HOME") ?: ""
-    val outDir = project.file("src/main/assets/bin")
-    commandLine("bash", "-c", """
-        set -e
-        if [ -z "$ndk" ] && ! command -v aarch64-linux-android28-clang >/dev/null 2>&1; then
-            echo "WARN: 未找到 NDK（aarch64-linux-android28-clang），跳过 native 构建"
-            echo "WARN: 请设置 NDK=/path/to/ndk 或把 NDK 工具链加入 PATH"
-            exit 0
-        fi
-        cd ../..  # lab-ace 根目录
-        NDK="$ndk" ./build-lab-ace.sh
-        mkdir -p android/app/src/main/assets/bin
-        cp bin/arm64/* android/app/src/main/assets/bin/
-        echo "native 产物已拷入 assets/bin"
-    """)
+// AGP 要求 CMake 源在 src/main/cpp 内 —— 构建时从仓库根同步 lab-ace C 源
+// 到 cpp/ace-src/（单一来源，避免复制两份代码）
+tasks.register<Sync>("syncAceSources") {
+    from(rootProject.projectDir.parentFile)   // lab-ace 根（android/ 的父目录）
+    into(layout.projectDirectory.dir("src/main/cpp/ace-src"))
+    include("*.c", "*.h")
+}
+tasks.named("preBuild") {
+    dependsOn("syncAceSources")
 }

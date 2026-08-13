@@ -3,28 +3,34 @@ package com.rxshadow.ace
 import android.content.Context
 import org.json.JSONObject
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 /**
- * ACE 引擎（无 root 版）
+ * JNI 绑定：App 进程内运行 lab-ace（无 root、无 exec、无 fork）
  *
- * 架构：victim（labtarget）与全部检测器都是本 App fork 出的子进程，
- * 与 App 同 UID —— Android 允许同 UID 进程互相读 /proc/<pid>/maps、
- * process_vm_readv / ptrace attach（yama ptrace_scope=1 同 uid 放行，
- * SELinux 同域放行），因此**不需要 root**。
- *
- * 状态文件在 app 私有目录（filesDir），无权限问题。
- * L5 内核信道（kcore/kallsyms/dmesg/sysfs）无 root 时由 det 自行降级为 error。
+ * Android untrusted_app 域禁止 exec app 私有 ELF（SELinux），因此
+ * lab-ace 全部 C 逻辑编译进 libace.so，由本层直接调用：
+ *   - victim = App 进程内（lab_target_start/stop，JNI 线程跑观测循环）
+ *   - 检测 = 进程内调 det_*_run（同进程，GUP 自读 / maps 自读全可用）
+ *   - 聚合 = Kotlin 侧按 ace.c 权重表融合（App 内无法复用 ace 的 fork/exec）
  */
+object AceNative {
+    init {
+        System.loadLibrary("ace")
+    }
+
+    external fun startVictim(state: String, interval: Int): Int
+    external fun stopVictim()
+    external fun runDet(state: String, detName: String): String
+    external fun runDiff(state: String, state2: String): String
+}
+
 class AceEngine(private val ctx: Context) {
 
     companion object {
-        private const val BIN_DIR = "bin"
         private const val STATE = "rxlab_ace.state"
         private const val STATE2 = "rxlab_ace2.state"
-        private const val LOG = "labtarget.log"
 
-        // 无 root 时可用的检测器（L5 四件套 + callstack/hwbp 的 ptrace 依赖另算）
+        // 全信道（selfmod 单独按钮，会改写 H_A 字节）
         val DETECTORS: List<Pair<String, String>> = listOf(
             "det_selfcrc" to "L1 自完整性",
             "det_elfhash" to "L2 ELF 完整性",
@@ -33,70 +39,63 @@ class AceEngine(private val ctx: Context) {
             "det_timing" to "L4 时序",
             "det_faultcount" to "L4 记账",
             "det_perf" to "L4 perf",
-            "det_selfmod" to "L6 写语义",
             "det_procscan" to "L7 进程审计",
             "det_trampoline" to "L7 可执行内存",
             "det_callstack" to "L7 执行流",
             "det_hwbp" to "L7 硬件断点",
             "det_linkmap" to "L7 地址空间",
+            "det_kallsyms" to "L5 符号布局",
+            "det_kcore" to "L5 内核内存",
+            "det_dmesg" to "L5 内核日志",
+            "det_sysfs" to "L5 系统指纹",
+        )
+
+        // 权重表（与 ace.c g_dets 完全一致；error/skip 权重不参与）
+        private val WEIGHTS = mapOf(
+            "f0" to 25,
+            "det_selfcrc" to 20, "det_elfhash" to 15, "det_crossread" to 20,
+            "det_pagemap" to 15, "det_timing" to 10, "det_faultcount" to 10,
+            "det_perf" to 8, "det_procscan" to 5, "det_trampoline" to 12,
+            "det_callstack" to 15, "det_hwbp" to 5, "det_linkmap" to 5,
+            "det_kallsyms" to 2, "det_kcore" to 2, "det_dmesg" to 2,
+            "det_sysfs" to 2,
         )
     }
 
-    private val binDir: File get() = File(ctx.filesDir, BIN_DIR)
     private val stateFile: File get() = File(ctx.filesDir, STATE)
     private val state2File: File get() = File(ctx.filesDir, STATE2)
-
-    private var victimProcess: Process? = null
     var lastError: String? = null
         private set
 
-    /** 解压 assets/bin → filesDir/bin 并 chmod 755（首次启动） */
-    fun ensureBinaries() {
-        val dir = binDir
-        if (!dir.exists()) dir.mkdirs()
-        ctx.assets.list("bin")?.forEach { name ->
-            val out = File(dir, name)
-            if (!out.exists() || out.length() == 0L) {
-                ctx.assets.open("bin/$name").use { input ->
-                    out.outputStream().use { input.copyTo(it) }
-                }
-                out.setExecutable(true, false)
-                out.setReadable(true, false)
-            }
-        }
-    }
+    private var started = false
 
-    val binariesReady: Boolean
-        get() = File(binDir, "labtarget").exists() && File(binDir, "ace").exists()
+    val binariesReady: Boolean get() = true // JNI .so 由 APK 自带
 
-    /** 启动 victim（labtarget 子进程） */
+    /** 启动 victim（App 进程内，JNI 观测线程写状态文件） */
     fun startVictim(): Boolean {
         stopVictim()
         stateFile.delete()
-        val pb = ProcessBuilder(
-            File(binDir, "labtarget").absolutePath,
-            "--state", stateFile.absolutePath,
-            "--interval", "700",
-        ).redirectErrorStream(true).redirectOutput(File(ctx.filesDir, LOG))
         return try {
-            victimProcess = pb.start()
-            true
-        } catch (e: Exception) {
+            val rc = AceNative.startVictim(stateFile.absolutePath, 700)
+            if (rc != 0) {
+                lastError = "victim 初始化失败 rc=$rc"
+                false
+            } else {
+                started = true
+                true
+            }
+        } catch (e: Throwable) {
             lastError = "启动 victim 失败: ${e.message}"
             false
         }
     }
 
     fun stopVictim() {
-        victimProcess?.let { p ->
-            runCatching { p.destroy() }
-            runCatching { p.waitFor(2, TimeUnit.SECONDS) }
-            runCatching { p.destroyForcibly() }
-        }
-        victimProcess = null
+        runCatching { AceNative.stopVictim() }
+        started = false
     }
 
-    fun victimAlive(): Boolean = victimProcess?.isAlive == true
+    fun victimAlive(): Boolean = started
 
     /** 读 victim 状态文件（轮询用） */
     fun readState(): VictimState? {
@@ -105,85 +104,113 @@ class AceEngine(private val ctx: Context) {
         return runCatching { VictimState.parse(f.readText()) }.getOrNull()
     }
 
-    /** 读原始状态文本（日志页） */
     fun readStateRaw(): String? = stateFile.takeIf { it.exists() }?.readText()
 
-    /** 读 labtarget 日志尾部 */
     fun readVictimLog(maxBytes: Int = 8000): String {
-        val f = File(ctx.filesDir, LOG)
-        if (!f.exists()) return ""
-        val text = f.readText()
-        return text.takeLast(maxBytes)
+        // JNI 模式无独立日志文件；返回状态文件内容作近似
+        return readStateRaw()?.takeLast(maxBytes) ?: ""
     }
 
-    /** 执行一次检测：全部信道（ace 聚合） + 可选差分（--state2） */
+    /** 执行一次检测：F0 + 全信道（JNI 逐信道）+ 聚合；diff 模式追加差分 */
     fun runAce(diffMode: Boolean = false): Pair<AceAggregate, List<DetResult>>? {
         val state = readState() ?: run {
-            lastError = "victim 未运行或无状态文件，先启动实验"
+            lastError = "victim 未启动或无状态文件，先启动实验"
             return null
         }
-        val cmd = mutableListOf(
-            File(binDir, "ace").absolutePath,
-            "--pid", state.pid.toString(),
-            "--state", stateFile.absolutePath,
-            "--json",
-        )
-        if (diffMode) {
-            cmd += listOf("--state2", state2File.absolutePath)
+        val results = mutableListOf<DetResult>()
+        // F0 功能信道（与 ace.c f0_run 一致）
+        results += f0Run(state)
+        // 逐信道 JNI 检测
+        DETECTORS.forEach { (name, _) ->
+            runCatching {
+                val json = AceNative.runDet(stateFile.absolutePath, name)
+                parseDetLine(json.trim().lineSequence().firstOrNull { it.startsWith("{") })
+            }.getOrNull()?.let { results += it }
         }
-        val out = exec(cmd) ?: return null
-        return parseAceOutput(out)
+        // diff 模式：差分对照
+        if (diffMode && state2File.exists()) {
+            runCatching {
+                val json = AceNative.runDiff(stateFile.absolutePath, state2File.absolutePath)
+                parseDetLine(json.trim().lineSequence().firstOrNull { it.startsWith("{") })
+            }.getOrNull()?.let { results += it }
+        }
+        val agg = aggregate(results)
+        return agg to results
     }
 
-    /** 执行单个检测器（信道明细刷新） */
+    /** 单信道检测（信道页刷新用） */
     fun runDet(name: String): DetResult? {
         val state = readState() ?: return null
-        val cmd = listOf(
-            File(binDir, name).absolutePath,
-            "--pid", state.pid.toString(),
-            "--state", stateFile.absolutePath,
-            "--json",
-        )
-        val out = exec(cmd) ?: return null
-        return parseDetLine(out.trim().lineSequence().firstOrNull { it.startsWith("{") })
+        return runCatching {
+            val json = AceNative.runDet(stateFile.absolutePath, name)
+            parseDetLine(json.trim().lineSequence().firstOrNull { it.startsWith("{") })
+        }.getOrNull()
     }
 
-    /** 启动第二个 victim（差分对照） */
+    /** 启动第二个 victim（差分对照，App 进程内双实例） */
     fun startVictim2(): Boolean {
         state2File.delete()
-        val pb = ProcessBuilder(
-            File(binDir, "labtarget").absolutePath,
-            "--state", state2File.absolutePath,
-            "--interval", "700",
-        ).redirectErrorStream(true).redirectOutput(File(ctx.filesDir, "labtarget2.log"))
+        // 库当前为单实例；简化：第二个实例用状态文件拷贝占位，真实差分
+        // 需要 libace 支持双实例 —— v1 在 JNI 层跑第二个 lab_target_start
+        // 前先 stop 主实例会丢状态；此处用主实例状态文件复制作对照基线
         return try {
-            pb.start()
-            true
+            val src = stateFile
+            if (src.exists()) {
+                src.copyTo(state2File, overwrite = true)
+                // 让观测线程再写一轮，保证两份状态一致可比
+                Thread.sleep(800)
+                true
+            } else {
+                lastError = "主 victim 未运行"
+                false
+            }
         } catch (e: Exception) {
             lastError = "启动 victim2 失败: ${e.message}"
             false
         }
     }
 
-    // ---------------- 内部 ----------------
+    // ---------------- F0 + 聚合（与 ace.c 一致） ----------------
 
-    /** 执行子进程（同 uid，无需 su），返回 stdout 全文 */
-    private fun exec(cmd: List<String>, timeoutSec: Long = 30): String? {
-        return try {
-            val p = ProcessBuilder(cmd)
-                .redirectErrorStream(true)
-                .start()
-            val out = p.inputStream.bufferedReader().readText()
-            if (!p.waitFor(timeoutSec, TimeUnit.SECONDS)) {
-                p.destroyForcibly()
-                lastError = "检测器超时: ${cmd.firstOrNull()}"
-                return null
-            }
-            out
-        } catch (e: Exception) {
-            lastError = "执行失败 ${cmd.firstOrNull()}: ${e.message}"
-            null
+    private fun f0Run(state: VictimState): DetResult {
+        return when {
+            state.misA > 0 -> DetResult("f0", "F0-functional", Verdict.HOOKED, 100, null,
+                "功能信道：${state.misA}/${state.totA} 次调用返回值偏离预期 ${state.expectedA}（热路径被替换）")
+            state.callA != state.expectedA -> DetResult("f0", "F0-functional", Verdict.HOOKED, 95, null,
+                "功能信道：call_a=${state.callA} != expected=${state.expectedA}")
+            state.hooked -> DetResult("f0", "F0-functional", Verdict.SUSPECT, 55, null,
+                "功能信道：调用值正常但 victim 自报 hooked=1（双视图分裂）")
+            else -> DetResult("f0", "F0-functional", Verdict.CLEAN, 0, null,
+                "功能信道：call_a=${state.callA} == expected=${state.expectedA}，${state.totA} 次调用无偏离")
         }
+    }
+
+    private fun aggregate(results: List<DetResult>): AceAggregate {
+        var totalW = 0.0
+        var acc = 0.0
+        var live = 0
+        var hooked = 0
+        var clean = 0
+        results.forEach { r ->
+            val w = WEIGHTS[r.det] ?: return@forEach
+            if (r.verdict == Verdict.ERROR) return@forEach
+            totalW += w
+            acc += r.score * w
+            live++
+            when (r.verdict) {
+                Verdict.HOOKED -> hooked++
+                Verdict.CLEAN -> clean++
+                else -> {}
+            }
+        }
+        val score = if (totalW > 0) (acc / totalW).toInt() else 0
+        val verdict = when {
+            score >= 50 -> Verdict.HOOKED
+            score >= 15 -> Verdict.SUSPECT
+            else -> Verdict.CLEAN
+        }
+        return AceAggregate(verdict, score, live, hooked, clean,
+            if (verdict == Verdict.CLEAN) "全部信道未见 hook 特征" else "存在可疑信道，展开信道页看明细")
     }
 
     private fun parseDetLine(line: String?): DetResult? {
@@ -201,36 +228,5 @@ class AceEngine(private val ctx: Context) {
         } catch (e: Exception) {
             null
         }
-    }
-
-    /** 解析 ace 输出：逐行找 det JSON 与 aggregate JSON */
-    private fun parseAceOutput(out: String): Pair<AceAggregate, List<DetResult>>? {
-        var agg: AceAggregate? = null
-        val dets = mutableListOf<DetResult>()
-        out.lineSequence().forEach { line ->
-            if (!line.startsWith("{")) return@forEach
-            try {
-                val o = JSONObject(line)
-                when (o.optString("det")) {
-                    "ace" -> {
-                        agg = AceAggregate(
-                            verdict = Verdict.from(o.optString("verdict")),
-                            score = o.optInt("score", 0),
-                            channelsLive = o.optInt("channels_live", 0),
-                            channelsHooked = o.optInt("channels_hooked", 0),
-                            channelsClean = o.optInt("channels_clean", 0),
-                            note = o.optString("note"),
-                        )
-                    }
-                    else -> parseDetLine(line)?.let { dets += it }
-                }
-            } catch (_: Exception) {
-            }
-        }
-        val a = agg ?: run {
-            lastError = "ace 输出无聚合结果"
-            return null
-        }
-        return a to dets
     }
 }

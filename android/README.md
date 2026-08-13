@@ -1,39 +1,40 @@
 # rxshadow-ace Android App（无 root 版）
 
-把 lab-ace 检测套件集成成 APK：victim（labtarget）与全部检测器都是
-**本 App 的同 UID 子进程**（`ProcessBuilder` 直接 exec，不经过 su），
-借助 Android 同 UID 进程可互读 `/proc/<pid>/maps`、`process_vm_readv`、
-状态文件的机制，**不需要 root**。
+把 lab-ace 检测套件集成成 APK。**关键约束**：Android 9+ 的 SELinux
+`untrusted_app` 域禁止 exec app 私有目录的 ELF（`app_data_file` 无
+execute 权限）—— 所以不采用"子进程 exec 二进制"方案，而是把 lab-ace
+全部 C 逻辑编译进 **libace.so（CMake）**，App 进程内通过 **JNI** 直接
+调用（dlopen 合法）：victim 与检测都在 App 进程内运行，**不需要 root、
+不需要 exec、不需要 fork**。
 
 ```
-┌─ App 进程（Compose UI，无特权）────────────────────────┐
-│  ProcessBuilder（同 uid，无 su）                        │
-│   ├─ labtarget 子进程（victim，匿名可执行页 H_A/H_B）    │
-│   ├─ ace 子进程（--pid <victim> --state <files> --json）│
-│   └─ det_* 子进程（读 victim maps/内存，同 uid）         │
-│  状态文件：/data/data/com.rxshadow.ace/files/           │
-└─────────────────────────────────────────────────────────┘
+┌─ App 进程（Compose UI，无特权）───────────────────────────┐
+│  libace.so（JNI，System.loadLibrary）                     │
+│   ├─ lab_target_start/stop  → victim（H_A/H_B + worker    │
+│   │    + 记账/自读时序自测线程，观测线程写状态文件）        │
+│   ├─ det_*_run ×18          → 进程内检测（自读/GUP 自读/  │
+│   │    maps 自读，JSON 契约输出）                          │
+│   └─ Kotlin 聚合：F0 + 18 信道按 ace.c 权重表融合          │
+│  状态文件：/data/data/com.rxshadow.ace/files/             │
+└────────────────────────────────────────────────────────────┘
 ```
+
+C 源由 gradle `syncAceSources` 任务构建时从仓库根同步到
+`app/src/main/cpp/ace-src/`（AGP 要求 CMake 源在 cpp/ 内，单一来源）。
 
 ## 构建
 
-依赖：JDK 17、Android SDK（compileSdk 34）、NDK r27c（或工具链在 PATH）。
+依赖：JDK 17、Android SDK（compileSdk 34）、NDK r27c（gradle 会自动下载
+若 SDK 已装 platform 34 + NDK 27.0.12077973）。
 
 ```sh
 cd android
-
-# 1) 用 NDK 编译 lab-ace 全部二进制并拷入 assets/bin
-NDK=/path/to/ndk-r27c ./gradlew buildNative
-
-# 2) 打包 APK
 ./gradlew assembleDebug
 # 产物：app/build/outputs/apk/debug/app-debug.apk
-
-# 3) 安装
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
-`buildNative` 找不到 NDK 时会跳过并警告（APK 内无二进制，App 启动会提示）。
+> CI（.github/workflows/release.yml）在 tag push 时自动构建并发布 Release。
 
 ## 无 root 能力边界
 

@@ -46,16 +46,13 @@ class MainActivity : ComponentActivity() {
                 var victimLog by remember { mutableStateOf("") }
                 var stateRaw by remember { mutableStateOf<String?>(null) }
 
-                // 初始化：解压 native 二进制
+                // 初始化：JNI .so 由 APK 自带（无 assets 解压）
                 LaunchedEffect(Unit) {
-                    withContext(Dispatchers.IO) {
-                        runCatching { engine.ensureBinaries() }
-                    }
                     binariesReady = engine.binariesReady
                     if (!binariesReady) {
                         Toast.makeText(
                             this@MainActivity,
-                            "native 二进制缺失：构建时需先跑 ./gradlew buildNative",
+                            "native 库加载失败",
                             Toast.LENGTH_LONG,
                         ).show()
                     }

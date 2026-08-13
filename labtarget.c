@@ -687,27 +687,51 @@ static int list_pages(void)
     return 0;
 }
 
-/* ============ main ============ */
-int main(int argc, char **argv)
-{
-    struct worker_arg wa, wb;
-    pthread_t th_a, th_b, th_pp, th_as;
-    int i;
-    const char *state = NULL;
+/* ============ 库化入口（JNI / 无 root App 内嵌，ACE_AS_LIB 或命令行共用） ============ */
+static struct worker_arg g_wa, g_wb;
+static pthread_t g_th_a, g_th_b, g_th_pp, g_th_as, g_th_obs;
+static volatile int g_started = 0;
 
-    for (i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--list")) {
-            /* 需要先建页再列 */
+/* 观测线程：原 main 主循环 */
+static void *observe_main(void *arg)
+{
+    int rounds = 0;
+    (void)arg;
+    while (!g_stop) {
+        if (flag_pending("stop")) {
+            flag_clear("stop");
+            g_stop = 1;
             break;
-        } else if (!strcmp(argv[i], "--state") && i + 1 < argc) {
-            state = argv[++i];
-        } else if (!strcmp(argv[i], "--interval") && i + 1 < argc) {
-            g_interval_ms = atoi(argv[++i]);
-            if (g_interval_ms < 100)
-                g_interval_ms = 100;
         }
+        if (flag_pending("dofork"))
+            do_fork();
+        if (flag_pending("domprotect"))
+            do_mprotect();
+        if (flag_pending("doverify")) {
+            flag_clear("doverify");
+            verify_va((uint64_t)(uintptr_t)h_pages[0], h_expected, 4096);
+        }
+        sample_faults();
+        if ((rounds++ % 5) == 0)
+            pthread_kill(g_th_a, SIGUSR1); /* 投递给 H_A worker：ucontext PC 自检
+                                            * （worker 正在执行 H_A，PC 落洞区 =
+                                            *  Cave 插桩执行证据；主线程不跑 H_A） */
+        state_write();
+        usleep((useconds_t)g_interval_ms * 1000);
     }
-    g_state_path = state ? state : ace_default_state_path();
+    return NULL;
+}
+
+/* 启动 victim（建 H 区 + 信号 + worker + 观测线程）。幂等。 */
+int lab_target_start(const char *state_path, int interval_ms)
+{
+    int i;
+    if (g_started)
+        return 0;
+    g_stop = 0;
+    g_state_path = state_path ? state_path : ace_default_state_path();
+    if (interval_ms >= 100)
+        g_interval_ms = interval_ms;
     {
         const char *slash = strrchr(g_state_path, '/');
         if (slash) {
@@ -725,29 +749,13 @@ int main(int argc, char **argv)
     for (i = 0; i < H_PAGE_N; i++) {
         h_pages[i] = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (h_pages[i] == MAP_FAILED) {
-            perror("mmap");
+        if (h_pages[i] == MAP_FAILED)
             return 1;
-        }
-        write_h_code(h_pages[i], i == 0 ? EXPECT_A : 0x2A); /* H_B 也返回 42 */
+        write_h_code(h_pages[i], i == 0 ? EXPECT_A : 0x2A);
         if (mprotect(h_pages[i], 4096, PROT_READ | PROT_EXEC) != 0 &&
-            mprotect(h_pages[i], 4096, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-            perror("mprotect");
+            mprotect(h_pages[i], 4096, PROT_READ | PROT_WRITE | PROT_EXEC) != 0)
             return 1;
-        }
         __builtin___clear_cache((char *)h_pages[i], (char *)h_pages[i] + 8);
-    }
-
-    /* 单次模式 */
-    for (i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--list")) {
-            return list_pages();
-        } else if (!strcmp(argv[i], "--verify") && i + 3 < argc) {
-            uint64_t va = strtoull(argv[i + 1], NULL, 0);
-            long expect = strtol(argv[i + 2], NULL, 0);
-            long iters = strtol(argv[i + 3], NULL, 0);
-            return verify_va(va, expect, iters);
-        }
     }
 
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -768,75 +776,110 @@ int main(int argc, char **argv)
     }
 
     /* 热路径 worker */
-    memset(&wa, 0, sizeof(wa));
-    wa.idx = 0;
-    wa.fn = (int (*)(void))h_pages[0];
-    wa.expect = h_expected;
-    wa.tot = &g_tot_a;
-    wa.mis = &g_mis_a;
-    wa.lat = g_lat_a;
-    wa.lat_n = &g_lat_n_a;
-    memset(&wb, 0, sizeof(wb));
-    wb.idx = 1;
-    wb.fn = (int (*)(void))h_pages[1];
-    wb.expect = h_expected;
-    wb.tot = &g_tot_b;
-    wb.mis = &g_mis_b;
-    wb.lat = g_lat_b;
-    wb.lat_n = &g_lat_n_b;
+    memset(&g_wa, 0, sizeof(g_wa));
+    g_wa.idx = 0;
+    g_wa.fn = (int (*)(void))h_pages[0];
+    g_wa.expect = h_expected;
+    g_wa.tot = &g_tot_a;
+    g_wa.mis = &g_mis_a;
+    g_wa.lat = g_lat_a;
+    g_wa.lat_n = &g_lat_n_a;
+    memset(&g_wb, 0, sizeof(g_wb));
+    g_wb.idx = 1;
+    g_wb.fn = (int (*)(void))h_pages[1];
+    g_wb.expect = h_expected;
+    g_wb.tot = &g_tot_b;
+    g_wb.mis = &g_mis_b;
+    g_wb.lat = g_lat_b;
+    g_wb.lat_n = &g_lat_n_b;
 
-    /* pingpong 放大线程（read+call 交替）+ 地址空间语义自测线程 */
-    pthread_create(&th_a, NULL, worker_main, &wa);
-    pthread_create(&th_b, NULL, worker_main, &wb);
-    pthread_create(&th_pp, NULL, pingpong_main, NULL);
-    pthread_create(&th_as, NULL, addrsem_main, NULL);
+    pthread_create(&g_th_a, NULL, worker_main, &g_wa);
+    pthread_create(&g_th_b, NULL, worker_main, &g_wb);
+    pthread_create(&g_th_pp, NULL, pingpong_main, NULL);
+    pthread_create(&g_th_as, NULL, addrsem_main, NULL);
+    pthread_create(&g_th_obs, NULL, observe_main, NULL);
+    g_started = 1;
+    return 0;
+}
+
+/* 停止 victim 并清理 */
+void lab_target_stop(void)
+{
+    if (!g_started)
+        return;
+    g_stop = 1;
+    if (g_child_pid > 0) {
+        kill(g_child_pid, SIGTERM);
+        waitpid(g_child_pid, NULL, 0);
+        g_child_pid = -1;
+    }
+    pthread_join(g_th_obs, NULL);
+    pthread_join(g_th_a, NULL);
+    pthread_join(g_th_b, NULL);
+    pthread_join(g_th_pp, NULL);
+    pthread_join(g_th_as, NULL);
+    unlink(g_state_path);
+    flag_clear("stop");
+    flag_clear("dofork");
+    flag_clear("domprotect");
+    flag_clear("doverify");
+    g_started = 0;
+    g_stop = 0;
+}
+
+/* ============ main（命令行模式；ACE_AS_LIB 时排除供 .so 链接） ============ */
+#ifndef ACE_AS_LIB
+int main(int argc, char **argv)
+{
+    const char *state = NULL;
+    int i;
+    int do_list = 0, do_verify = 0;
+    uint64_t v_va = 0;
+    long v_expect = 0, v_iters = 0;
+
+    for (i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--state") && i + 1 < argc)
+            state = argv[++i];
+        else if (!strcmp(argv[i], "--interval") && i + 1 < argc) {
+            g_interval_ms = atoi(argv[++i]);
+            if (g_interval_ms < 100)
+                g_interval_ms = 100;
+        } else if (!strcmp(argv[i], "--list"))
+            do_list = 1;
+        else if (!strcmp(argv[i], "--verify") && i + 3 < argc) {
+            do_verify = 1;
+            v_va = strtoull(argv[i + 1], NULL, 0);
+            v_expect = strtol(argv[i + 2], NULL, 0);
+            v_iters = strtol(argv[i + 3], NULL, 0);
+        }
+    }
+
+    if (lab_target_start(state, g_interval_ms) != 0) {
+        fprintf(stderr, "labtarget: 初始化失败\n");
+        return 1;
+    }
+    if (do_list) {
+        int rc = list_pages();
+        lab_target_stop();
+        return rc;
+    }
+    if (do_verify) {
+        int rc = verify_va(v_va, v_expect, v_iters);
+        lab_target_stop();
+        return rc;
+    }
 
     printf("T labtarget pid=%d va_a=0x%llx va_b=0x%llx state=%s\n",
            (int)getpid(),
            (unsigned long long)(uintptr_t)h_pages[0],
            (unsigned long long)(uintptr_t)h_pages[1], g_state_path);
 
-    /* 观测主循环 */
-    {
-        int rounds = 0;
-        while (!g_stop) {
-            if (flag_pending("stop")) {
-                flag_clear("stop");
-                g_stop = 1;
-                break;
-            }
-            if (flag_pending("dofork"))
-                do_fork();
-            if (flag_pending("domprotect"))
-                do_mprotect();
-            if (flag_pending("doverify")) {
-                flag_clear("doverify");
-                verify_va((uint64_t)(uintptr_t)h_pages[0], h_expected, 4096);
-            }
-            sample_faults();
-            if ((rounds++ % 5) == 0)
-                pthread_kill(th_a, SIGUSR1); /* 投递给 H_A worker：ucontext PC 自检
-                                              * （worker 正在执行 H_A，PC 落洞区 =
-                                              *  Cave 插桩执行证据；主线程不跑 H_A） */
-            state_write();
-            usleep((useconds_t)g_interval_ms * 1000);
-        }
-    }
-
-    g_stop = 1;
-    if (g_child_pid > 0) {
-        kill(g_child_pid, SIGTERM);
-        waitpid(g_child_pid, NULL, 0);
-    }
-    pthread_join(th_a, NULL);
-    pthread_join(th_b, NULL);
-    pthread_join(th_pp, NULL);
-    pthread_join(th_as, NULL);
-    unlink(g_state_path);
-    flag_clear("stop");
-    flag_clear("dofork");
-    flag_clear("domprotect");
-    flag_clear("doverify");
+    /* 命令行常驻：等观测线程收到 stop（flag 或信号） */
+    while (!g_stop)
+        usleep(200000);
+    lab_target_stop();
     printf("T labtarget exit\n");
     return 0;
 }
+#endif /* ACE_AS_LIB */
+
