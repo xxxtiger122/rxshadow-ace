@@ -370,6 +370,38 @@ int main(int argc, char **argv)
         }
 
         if (g_json) {
+            /* JSON 全量：先逐信道输出（含 F0 与 disabled/error），再 aggregate */
+            fprintf(g_out, "{\"det\":\"f0\",\"channel\":\"F0-functional\",");
+            ace_json_field_verdict(g_out, "verdict", g_f0_v);
+            ace_json_field_int(g_out, "score", g_f0_score);
+            fprintf(g_out, "\"note\":\"%s\"}\n", g_f0_note);
+            for (i = 0; i < NDET; i++) {
+                struct det *d = &g_dets[i];
+                fprintf(g_out, "{\"det\":\"%s\",\"channel\":\"%s\",", d->name,
+                        d->channel);
+                if (!d->run) {
+                    fprintf(g_out, "\"verdict\":\"error\",\"score\":0,"
+                                   "\"note\":\"disabled\"}\n");
+                } else if (d->skipped || d->v == V_ERROR) {
+                    ace_json_field_verdict(g_out, "verdict", V_ERROR);
+                    ace_json_field_int(g_out, "score", 0);
+                    fprintf(g_out, "\"note\":\"%s\"}\n",
+                            d->note[0] ? d->note : "unavailable");
+                } else {
+                    ace_json_field_verdict(g_out, "verdict", d->v);
+                    ace_json_field_int(g_out, "score", d->score);
+                    if (d->hits[0]) {
+                        fputs("\"hits\":", g_out);
+                        ace_json_escape(g_out, d->hits);
+                        fputc(',', g_out);
+                    }
+                    if (d->note[0]) {
+                        fputs("\"note\":", g_out);
+                        ace_json_escape(g_out, d->note);
+                    }
+                    fputs("}\n", g_out);
+                }
+            }
             fprintf(g_out, "{\"det\":\"ace\",\"channel\":\"aggregate\",");
             ace_json_field_verdict(g_out, "verdict", v);
             ace_json_field_int(g_out, "score", score);

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 盾牌 + 扫描线：ACE 检测 -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M54,22 L80,32 L80,54 C80,70 69,82 54,88 C39,82 28,70 28,54 L28,32 Z" />
+    <path
+        android:fillColor="#0D1117"
+        android:pathData="M54,30 L72,37 L72,54 C72,66 64,76 54,80 C44,76 36,66 36,54 L36,37 Z" />
+    <path
+        android:strokeColor="#00E5FF"
+        android:strokeWidth="2.5"
+        android:fillColor="#00000000"
+        android:pathData="M34,50 L44,50 M34,56 L48,56 M34,62 L42,62 M64,50 L74,50 M60,56 L74,56 M66,62 L74,62" />
+</vector>

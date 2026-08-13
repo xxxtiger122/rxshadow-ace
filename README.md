@@ -47,6 +47,17 @@ adb shell su -c 'cd /data/local/tmp/lab-ace && RX_HOOK=1 sh ace_run.sh'
 adb shell su -c 'cd /data/local/tmp/lab-ace && RX_HOOK=1 RX_SELFMOD=1 sh ace_run.sh'
 ```
 
+**Android App（无 root 版）**：`android/` 目录是完整 Android Studio 工程，
+victim 与检测器都是 App 的同 UID 子进程，无需 root。构建：
+
+```sh
+cd android
+NDK=/path/to/ndk-r27c ./gradlew buildNative && ./gradlew assembleDebug
+adb install app/build/outputs/apk/debug/app-debug.apk
+```
+
+能力边界与使用见 `android/README.md`。
+
 ## 检测矩阵（det → 针对的检测方法/机制）
 
 ### 执行语义信道（打 hook 的行为本身）
