@@ -32,7 +32,7 @@ for f in labtarget det_selfcrc det_crossread det_pagemap det_timing \
     "$CC" $CFLAGS -o "$OUT/$f" "$f.c"
 done
 echo "  CC  sim_hook"
-"$CC" $CFLAGS -o "$OUT/sim_hook" host/sim_hook.c
+"$CC" $CFLAGS -I. -o "$OUT/sim_hook" host/sim_hook.c
 
 echo "== 产物 =="
 ls -la "$OUT"
