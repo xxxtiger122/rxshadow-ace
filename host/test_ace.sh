@@ -51,6 +51,16 @@ run_scenario cave   hooked
 run_scenario brk    hooked
 run_scenario split  hooked
 
+# callstack PAC/TBI 剥离自检（真机 PAC 帧误报的回归测试）
+if "$BIN/det_callstack" --selftest >/dev/null 2>&1; then
+    echo "PASS[selftest] det_callstack PAC-strip 剥离逻辑正确"
+    PASS=$((PASS+1))
+else
+    echo "FAIL[selftest] det_callstack PAC-strip 剥离逻辑"
+    "$BIN/det_callstack" --selftest
+    FAIL=$((FAIL+1))
+fi
+
 # differential：双 victim 差分（A=clean, B=split 自报分裂）
 ST2="${TMPDIR:-/tmp}/rxlab_ace2.state"
 rm -f "$ST" "$ST.tmp" "$ST2" "$ST2.tmp"

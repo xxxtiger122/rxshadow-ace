@@ -240,3 +240,9 @@ score=0，7 信道全绿无误报。
 7. 真机阈值（timing ratio、getpid 基线）需按设备校准一次再固化。
 8. `det_callstack`/`det_hwbp` 的 ptrace attach 是侵入操作，会短暂置位
    victim 的 TracerPid（`det_procscan` 排在它们之前跑即不受影响）。
+9. **ARM64 PAC 帧处理**（真机修复）：`paciasp` 会把 LR 签名后存栈，
+   `[FP+8]` 读出的返回地址高 16 位是 PAC 码/tag → 原实现误判为 ghost
+   （干净基线误报 hooked 92）。`det_callstack` 已改为 `classify_strip`：
+   判 ghost 时先剥高 16 位再重分类——PAC 垃圾帧落回真实 .text 不算命中，
+   真 VMA-less 幽灵地址（低 48 位内）不受影响。`det_callstack --selftest`
+   可回归验证剥离逻辑（host 已纳入 make test）。

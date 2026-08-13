@@ -102,6 +102,33 @@ static int classify(uint64_t addr)
     return 3; /* 不在任何 VMA：幽灵内存（290718 Ghost Mem 形态）*/
 }
 
+/* PAC/TBI 剥离分类：
+ * ARM64 开启 PAC（paciasp 签名 LR）+ TBI 后，栈上 [FP+8] 的返回地址
+ * 高 16 位是签名码/tag，地址整体超出所有 VMA → 被 classify 误判为
+ * ghost（干净基线就误报 hooked 92）。
+ * 修复：先按原值分类；判 ghost 时剥高 16 位（48 位用户 VA 掩码）重分类
+ * —— PAC 垃圾帧剥后落回真实 .text/.so → 不算命中；真 VMA-less 幽灵
+ * 地址本身在低 48 位内，剥后不变 → 仍 ghost → 正确命中。
+ */
+static uint64_t strip_high(uint64_t a)
+{
+    return a & 0x0000FFFFFFFFFFFFull;
+}
+
+static int classify_strip(uint64_t addr)
+{
+    int c = classify(addr);
+    if (c == 3) {
+        uint64_t s = strip_high(addr);
+        if (s != addr) {
+            int c2 = classify(s);
+            if (c2 != 3)
+                return c2;
+        }
+    }
+    return c;
+}
+
 static int read_vm(pid_t pid, uint64_t addr, void *out, size_t n)
 {
     char path[64];
@@ -151,14 +178,14 @@ static int backtrace_thread(pid_t pid, pid_t tid, char *out, size_t outsz)
         char *o = out;
         size_t n = 0;
         int c;
-        c = classify(pc);
+        c = classify_strip(pc);
         if (c == 1 || c == 3) {
             n_hit++;
             n += snprintf(o + n, outsz - n, "PC=0x%llx(%s) ", (unsigned long long)pc,
                           c == 1 ? "anon-exec" : "ghost");
         }
         if (lr) {
-            c = classify(lr);
+            c = classify_strip(lr);
             if (c == 1 || c == 3) {
                 n_hit++;
                 n += snprintf(o + n, outsz - n, "LR=0x%llx(%s) ",
@@ -166,16 +193,17 @@ static int backtrace_thread(pid_t pid, pid_t tid, char *out, size_t outsz)
             }
         }
     }
-    /* FP 链回溯 */
-    cur = fp;
+    /* FP 链回溯（PAC 剥离：栈上 LR 是 paciasp 签名值，next_fp/ret 均 strip） */
+    cur = strip_high(fp);
     for (f = 0; f < MAX_FRAME && cur && cur > 0x1000 && cur < 0x7ffffffff000ULL; f++) {
         uint64_t next_fp, ret;
         if (read_vm(pid, cur, &next_fp, 8) != 0)
             break;
         if (read_vm(pid, cur + 8, &ret, 8) != 0)
             break;
+        next_fp = strip_high(next_fp);
         {
-            int c = classify(ret);
+            int c = classify_strip(ret);
             if (c == 1 || c == 3) {
                 n_hit++;
                 {
@@ -186,7 +214,7 @@ static int backtrace_thread(pid_t pid, pid_t tid, char *out, size_t outsz)
             }
         }
         if (next_fp <= cur)
-            break; /* 链终止 */
+            break; /* 链终止（PAC 剥离后仍单调递减才是有效链） */
         cur = next_fp;
     }
     return n_hit;
@@ -211,6 +239,23 @@ int main(int argc, char **argv)
             g_state = argv[++i];
         else if (!strcmp(argv[i], "--json"))
             g_json = 1;
+        else if (!strcmp(argv[i], "--selftest")) {
+            /* PAC/TBI 剥离逻辑自检（host 可跑，不依赖目标进程） */
+            uint64_t base = 0x7f1234567890ull;
+            uint64_t p16 = base | 0xDEAD000000000000ull; /* 16 位 PAC 码 */
+            uint64_t p8 = base | 0xDE00000000000000ull;  /* 高字节 tag/PAC */
+            int ok = (strip_high(p16) == base) &&
+                     (strip_high(p8) == base) &&
+                     (strip_high(base) == base) &&
+                     (classify_strip(base) == 3); /* 无 maps 时 base 仍是 ghost */
+            printf("selftest PAC-strip: %s\n"
+                   "  base=0x%llx strip(p16)=0x%llx strip(p8)=0x%llx\n",
+                   ok ? "ok" : "FAIL",
+                   (unsigned long long)base,
+                   (unsigned long long)strip_high(p16),
+                   (unsigned long long)strip_high(p8));
+            return ok ? 0 : 1;
+        }
     }
     if (!g_state)
         g_state = ace_default_state_path();
