@@ -130,6 +130,39 @@ static volatile long g_mincore_cave = -1; /* 页尾 64B（cave 洞区）驻留 *
 static volatile long g_mmap_probe_fail = 0; /* 占位探测失败次数 */
 static volatile long g_mmap_probe_n = 0;    /* 占位探测总次数 */
 
+/* ===== 自读时序（290304 评论：扫描耗时/时间差；292226 L444 读诱饵） =====
+ * 顺序读代码页：干净页驻留可读零 fault；跷跷板/读窗翻转的被挂页每页付
+ * 一次 DABT + ~0.28µs 翻页成本 → 全页扫描耗时暴涨。Cave 稳态 PTE 常驻
+ * shadow R-X，读无异常 → 快（但读到的字节不同，由 selfcrc 补位）。
+ * H_B（控制页）作对照：比值是核心信号。 */
+static volatile long g_read_scan_a_min = -1, g_read_scan_a_p50 = -1;
+static volatile long g_read_scan_b_min = -1, g_read_scan_b_p50 = -1;
+
+/* 全页顺序读一次（64B 步进 volatile 累加，防优化），返回耗时 ns */
+static uint64_t read_page_scan_ns(const uint8_t *page)
+{
+    volatile uint8_t sink = 0;
+    uint64_t t0, t1;
+    size_t j;
+    t0 = ace_now_ns();
+    for (j = 0; j < 4096; j += 64)
+        sink += page[j];
+    t1 = ace_now_ns();
+    (void)sink;
+    return t1 - t0;
+}
+
+/* 重复 N 次取 min/p50（min 滤掉调度/中断单边噪声 —— 292226 min-of-N） */
+static void read_scan_stats(const uint8_t *page, long *min_out, long *p50_out)
+{
+    uint64_t samples[64];
+    int i;
+    for (i = 0; i < 64; i++)
+        samples[i] = read_page_scan_ns(page);
+    *min_out = (long)ace_min_of(samples, 64);
+    *p50_out = (long)ace_percentile(samples, 64, 0.50);
+}
+
 static void fault_handler(int sig, siginfo_t *si, void *uc)
 {
     (void)si;
@@ -347,6 +380,10 @@ static void state_write(void)
         fprintf(f, "child_crc_self_a=0x%08lx\n", *(volatile long *)&g_child_crc);
         fprintf(f, "hooked=%d\n", hooked ? 1 : 0);
         fprintf(f, "lat_read_a_ns=%llu\n", (unsigned long long)(t1 - t0));
+        fprintf(f, "read_scan_a_min=%ld\n", *(volatile long *)&g_read_scan_a_min);
+        fprintf(f, "read_scan_a_p50=%ld\n", *(volatile long *)&g_read_scan_a_p50);
+        fprintf(f, "read_scan_b_min=%ld\n", *(volatile long *)&g_read_scan_b_min);
+        fprintf(f, "read_scan_b_p50=%ld\n", *(volatile long *)&g_read_scan_b_p50);
         fprintf(f, "anon_exec_base_bytes=%d\n", H_PAGE_N * 4096); /* H 区=实验对象自带基线 */
         /* 记账自观测（292226）：fault 增量 / 信号泄漏 / ucontext PC / pingpong */
         fprintf(f, "minflt_delta=%lu\n", *(volatile unsigned long *)&g_minflt_delta);
@@ -500,6 +537,17 @@ static void *addrsem_main(void *arg)
         }
         g_mincore_ok = ok_full;
         g_mincore_cave = ok_cave;
+
+        /* 自读时序：H_A（可挂）vs H_B（对照）全页顺序读 min/p50 */
+        {
+            long ma = -1, pa = -1, mb = -1, pb = -1;
+            read_scan_stats(h_pages[0], &ma, &pa);
+            read_scan_stats(h_pages[1], &mb, &pb);
+            g_read_scan_a_min = ma;
+            g_read_scan_a_p50 = pa;
+            g_read_scan_b_min = mb;
+            g_read_scan_b_p50 = pb;
+        }
 
         /* mmap 占位探测：H_A 页对齐地址附近 ±32MB 随机探测 */
         {

@@ -57,6 +57,8 @@ data class VictimState(
     val stimeRatio: Double = 0.0,
     val uctxPcCave: Long = 0,
     val pingpongNs: Long = 0,
+    val readScanAP50: Long = 0,
+    val readScanBP50: Long = 0,
     val latAP50: Long = 0,
     val latBP50: Long = 0,
     val childPid: Int = -1,
@@ -64,6 +66,10 @@ data class VictimState(
 ) {
     val latencyRatio: Double
         get() = if (latBP50 > 0) latAP50.toDouble() / latBP50 else 0.0
+
+    /** 自读时序比（H_A/H_B 全页顺序读，290304 时间差） */
+    val readScanRatio: Double
+        get() = if (readScanBP50 > 0) readScanAP50.toDouble() / readScanBP50 else 0.0
 
     companion object {
         fun parse(text: String): VictimState {
@@ -90,6 +96,8 @@ data class VictimState(
                         (m["utime_ns"]?.toDoubleOrNull() ?: 0.0) + 1.0),
                 uctxPcCave = l("uctx_pc_cave", 0),
                 pingpongNs = l("pingpong_ns", 0),
+                readScanAP50 = l("read_scan_a_p50", 0),
+                readScanBP50 = l("read_scan_b_p50", 0),
                 latAP50 = l("lat_a_p50", 0),
                 latBP50 = l("lat_b_p50", 0),
                 childPid = l("child_pid", -1).toInt(),

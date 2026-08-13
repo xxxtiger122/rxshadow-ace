@@ -39,8 +39,9 @@ int main(int argc, char **argv)
     int score = 0;
     char hits[512] = "";
     char note[512] = "";
-    double ratio_p50 = 0.0;
+    double ratio_p50 = 0.0, rs_ratio = 0.0;
     uint64_t sc_min = 0, sc_p50 = 0, sc_p99 = 0;
+    long rs_a_min = -1, rs_a_p50 = -1, rs_b_min = -1, rs_b_p50 = -1;
 
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--pid") && i + 1 < argc)
@@ -69,6 +70,14 @@ int main(int argc, char **argv)
     mis_a = ace_state_get_l(g_state, "mis_a", -1);
     tot_a = ace_state_get_l(g_state, "tot_a", 0);
 
+    /* 自读时序（290304 时间差 / 292226 读诱饵）：H_A vs H_B 全页顺序读 */
+    rs_a_min = ace_state_get_l(g_state, "read_scan_a_min", -1);
+    rs_a_p50 = ace_state_get_l(g_state, "read_scan_a_p50", -1);
+    rs_b_min = ace_state_get_l(g_state, "read_scan_b_min", -1);
+    rs_b_p50 = ace_state_get_l(g_state, "read_scan_b_p50", -1);
+    if (rs_a_p50 > 0 && rs_b_p50 > 0)
+        rs_ratio = (double)rs_a_p50 / (double)rs_b_p50;
+
     /* 独立系统调用计时 */
     {
         static uint64_t sc[SC_N];
@@ -88,10 +97,13 @@ int main(int argc, char **argv)
 
     snprintf(hits, sizeof(hits),
              "lat_a min=%llu p50=%llu p99=%llu ns | lat_b min=%llu p50=%llu "
-             "p99=%llu ns | ratio_p50=%.2f | getpid min=%llu p50=%llu p99=%llu ns",
+             "p99=%llu ns | ratio_p50=%.2f | read_scan_a min=%ld p50=%ld ns "
+             "read_scan_b min=%ld p50=%ld ns rs_ratio=%.2f | getpid min=%llu "
+             "p50=%llu p99=%llu ns",
              (unsigned long long)la_min, (unsigned long long)la_p50,
              (unsigned long long)la_p99, (unsigned long long)lb_min,
              (unsigned long long)lb_p50, (unsigned long long)lb_p99, ratio_p50,
+             rs_a_min, rs_a_p50, rs_b_min, rs_b_p50, rs_ratio,
              (unsigned long long)sc_min, (unsigned long long)sc_p50,
              (unsigned long long)sc_p99);
 
@@ -117,6 +129,24 @@ int main(int argc, char **argv)
     } else {
         snprintf(note, sizeof(note),
                  "H_A/H_B 延迟比 %.2f：与干净基线一致", ratio_p50);
+    }
+
+    /* 自读时序：全页顺序读 H_A vs H_B（读窗翻转/跷跷板每页付一次 fault） */
+    if (rs_ratio >= 3.0 || rs_a_p50 > 5000) {
+        if (score < 80)
+            score = 80;
+        v = V_HOOKED;
+        snprintf(note + strlen(note), sizeof(note) - strlen(note),
+                 "；自读时序 H_A p50=%ldns vs H_B p50=%ldns（比 %.2f）："
+                 "读窗翻转/跷跷板翻页的扫描耗时特征（290304 时间差）",
+                 rs_a_p50, rs_b_p50, rs_ratio);
+    } else if (rs_ratio >= 1.5) {
+        if (score < 40)
+            score = 40;
+        if (v == V_CLEAN)
+            v = V_SUSPECT;
+        snprintf(note + strlen(note), sizeof(note) - strlen(note),
+                 "；自读时序比 %.2f 偏高（读页路径有异常开销）", rs_ratio);
     }
 
     /* 独立 syscall 层信号（次要证据） */

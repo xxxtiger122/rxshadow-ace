@@ -209,11 +209,12 @@ private fun VictimCard(state: VictimState) {
             Text("实验对象（victim）", style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                Metric("pid", state.pid.toString())
                 Metric("call_a", "${state.callA}${if (state.callA != state.expectedA) " ≠ ${state.expectedA}" else ""}",
                     warn = state.callA != state.expectedA)
                 Metric("延迟比", "%.2f".format(state.latencyRatio),
                     warn = state.latencyRatio >= 1.5)
+                Metric("自读时序", "%.2f".format(state.readScanRatio),
+                    warn = state.readScanRatio >= 1.5)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
                 Metric("crc_self", state.crcSelfA)

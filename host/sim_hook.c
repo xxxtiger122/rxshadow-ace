@@ -85,6 +85,14 @@ static void write_state(const char *path, uint64_t va_a, uint64_t va_b,
     fprintf(f, "child_pid=0\nchild_call_a=-1\nchild_crc_self_a=0\n");
     fprintf(f, "hooked=%d\n", hooked ? 1 : 0);
     fprintf(f, "lat_read_a_ns=2000\n");
+    /* 自读时序模拟：异常驱动（minflt 大）→ 读窗翻转使 H_A 全页读变慢 */
+    if (minflt_delta > 1000) {
+        fprintf(f, "read_scan_a_min=38000\nread_scan_a_p50=40000\n");
+        fprintf(f, "read_scan_b_min=1900\nread_scan_b_p50=2000\n");
+    } else {
+        fprintf(f, "read_scan_a_min=1900\nread_scan_a_p50=2000\n");
+        fprintf(f, "read_scan_b_min=1900\nread_scan_b_p50=2000\n");
+    }
     fprintf(f, "anon_exec_base_bytes=8192\n"); /* sim_hook 2×4KB 匿名可执行页 */
     /* 记账自观测模拟（292226）：fault 风暴 / stime / 信号 / ucontext / pingpong */
     fprintf(f, "minflt_delta=%ld\n", minflt_delta);

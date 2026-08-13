@@ -68,7 +68,7 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 | `det_elfhash` | L2 ELF 完整性 | 传统 Inline Hook 改字节（看雪 277402 Hunter 主力检测）；对双视图=GUP 隐藏验证器 | 磁盘文件段 checksum vs GUP 读内存段 checksum | 传统 hook 必杀；双视图挂后 `clean`（GUP 隐藏生效） |
 | `det_crossread` | L2 跨进程读 | `follow_page_pte` 隐藏窗：GUP 读返回 original `page*` | 独立 GUP 读 ≠ victim 自报自读 CRC；`--tries 64` 高频采样抓跷跷板/NPT 影子页暴露窗 | 挂后 `hooked`（最直接证据） |
 | `det_pagemap` | L3 页表/PFN | 双 PFN 本质：shadow 是第二张物理页；fork 隐藏=子不继承 shadow | 父/子进程同一 VA 的 pagemap PFN 分歧；采样稳定性 | fork 后父/子 PFN 不同 |
-| `det_timing` | L4 时序 | BRK ≈401ns/op vs Cave ≈4.5ns/op vs 干净 ≈2-5ns（290304 评论：扫描耗时/时间差）；VMEXIT 开销（NPT/EPT 帖） | H_A/H_B 延迟比 + getpid syscall 延迟 + `lat_read_a_ns` 读页耗时 | 挂后 ratio 拉高 |
+| `det_timing` | L4 时序 | BRK ≈401ns/op vs Cave ≈4.5ns/op vs 干净 ≈2-5ns（290304 评论：扫描耗时/时间差）；VMEXIT 开销（NPT/EPT 帖）；**自读时序**（290304 时间差 / 292226 读诱饵：顺序读代码页，读窗翻转的被挂页每页付一次 DABT） | H_A/H_B 延迟比 + getpid syscall 延迟 + `lat_read_a_ns` 读页耗时 + **`read_scan_a/b` 全页顺序读 min/p50 比值** | 挂后 ratio 拉高；跷跷板/读窗翻转命中自读时序（Cave 稳态不命中=设计目标） |
 | `det_faultcount` | L4 记账 | 异常驱动 hook 的 fault/stime 记账（292226"最危险检测线"）：每次命中进内核 → minflt 暴涨、stime 上升；读窗翻页"读 fault 收费"（290304）；信号泄漏（292066）；**Cave 洞区 PC**（292354 canonical-PC 映射缺陷） | minflt_delta/轮、stime 占比、SIGTRAP/SEGV/ILL 计数、uctx_pc_cave（PC 落 H_A 页尾洞区 = Cave 插桩执行）、pingpong read+call 最优耗时 | 挂后 minflt/stime 暴涨；cave 后洞区 PC 命中 |
 | `det_perf` | L4 perf 记账 | perf 性能侧信道（290718/292066 评论）：BRK/跷跷板命中 = 每次 1+ fault；跨核 TLB shootdown IPI 是唯一跨进程可见信道（292226） | perf_event_open 统计 victim page-faults/cycles 速率；/proc/vmstat pgfault 差分；/proc/interrupts TLB IPI 差分；smaps RSS/Shared 记账 | BRK/跷跷板命中；Cave 稳态不命中（设计目标） |
 | `det_diff` | L2 差分对照 | GUP 隐藏窗骗"外部读"骗不了"进程自读"（290718 自读 CRC 检测化）：两个同构 victim 构成对照实验 | A 自读 ≠ B 自读 且 GUP 一致 → 差分锁定被挂侧 | 双 victim 场景命中（`--state2`） |
@@ -127,8 +127,9 @@ labtarget [--list] [--verify <va> <expect> <iters>] [--interval <ms>] [--state <
   tot_a mis_a crc_self0_a crc_self_a crc_gup_a crc_self_b pfn_a pfn_b
   lat_{a,b}_{min,p50,p99} lat_read_a_ns child_pid child_call_a
   child_crc_self_a hooked anon_exec_base_bytes
+  read_scan_{a,b}_{min,p50}  ← 自读时序（全页顺序读 min/p50，H_B 对照）
   minflt_delta majflt_delta sig_{trap,segv,ill} uctx_pc_{ok,anon}
-  pingpong_ns stime_ns utime_ns mincore_ok mincore_cave
+  uctx_pc_cave pingpong_ns stime_ns utime_ns mincore_ok mincore_cave
   mmap_probe_{fail,n}`
 - 记账自观测（292226 时序侧信道）：主循环每轮采样 /proc/self/stat 的
   minflt 增量；每 5 轮自投递 SIGUSR1 检查 ucontext PC 是否落在 H 区
