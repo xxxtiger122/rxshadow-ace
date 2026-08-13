@@ -4,8 +4,9 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Info
@@ -13,8 +14,11 @@ import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rxshadow.ace.ui.*
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +26,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@OptIn(ExperimentalMaterial3Api::class)
 class MainActivity : ComponentActivity() {
 
     private val engine by lazy { AceEngine(applicationContext) }
@@ -68,9 +73,16 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Scaffold(
-                    containerColor = androidx.compose.ui.graphics.Color(0xFF0D1117),
+                    containerColor = Color(0xFF0D1117),
                     bottomBar = {
-                        NavigationBar(containerColor = C_SURFACE) {
+                        // 自定义底部导航（避开 material3 NavigationBar 的
+                        // experimental API 兼容性问题）
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(60.dp)
+                                .background(C_SURFACE),
+                        ) {
                             TabItem("仪表盘", Icons.Default.Dashboard, 0, tab) { tab = it }
                             TabItem("信道", Icons.Default.ListAlt, 1, tab) { tab = it }
                             TabItem("日志", Icons.Default.Terminal, 2, tab) { tab = it }
@@ -158,20 +170,28 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun TabItem(label: String, icon: ImageVector, index: Int, current: Int, onSelect: (Int) -> Unit) {
-    NavigationBarItem(
-        selected = current == index,
-        onClick = { onSelect(index) },
-        icon = { Icon(icon, null) },
-        label = { Text(label, fontSize = 11.sp) },
-        colors = NavigationBarItemDefaults.colors(
-            selectedIconColor = C_PRIMARY,
-            selectedTextColor = C_PRIMARY,
-            indicatorColor = C_PRIMARY.copy(alpha = 0.12f),
-            unselectedIconColor = C_TEXT_DIM,
-            unselectedTextColor = C_TEXT_DIM,
-        ),
-    )
+private fun TabItem(
+    label: String,
+    icon: ImageVector,
+    index: Int,
+    current: Int,
+    onSelect: (Int) -> Unit,
+) {
+    val selected = current == index
+    val color = if (selected) C_PRIMARY else C_TEXT_DIM
+    Column(
+        modifier = Modifier
+            .weight(1f)
+            .fillMaxHeight()
+            .clickable { onSelect(index) }
+            .background(if (selected) C_PRIMARY.copy(alpha = 0.10f) else Color.Transparent),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(icon, null, tint = color, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.height(2.dp))
+        Text(label, fontSize = 11.sp, color = color)
+    }
 }
 
 /** 轻量协程包装：异常吞掉避免崩溃 */
