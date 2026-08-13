@@ -1,0 +1,11 @@
+# 构建产物
+bin/
+*.o
+
+# 运行时状态 / flag 文件
+rxlab_ace.state*
+rxlab_ace_*
+
+# 编辑器 / 系统
+*.swp
+.DS_Store
