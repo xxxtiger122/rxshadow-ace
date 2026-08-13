@@ -32,6 +32,19 @@ class MainActivity : ComponentActivity() {
     private val engine by lazy { AceEngine(applicationContext) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // 崩溃落盘：未捕获异常栈写入 files/crash.log（定位信道页闪退）
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            runCatching {
+                val f = java.io.File(filesDir, "crash.log")
+                f.appendText(
+                    "\n===== ${java.text.SimpleDateFormat("MM-dd HH:mm:ss").format(java.util.Date())} " +
+                        "thread=${thread.name} =====\n" +
+                        android.util.Log.getStackTraceString(throwable) + "\n"
+                )
+            }
+            prev?.uncaughtException(thread, throwable)
+        }
         super.onCreate(savedInstanceState)
         setContent {
             AceTheme {
